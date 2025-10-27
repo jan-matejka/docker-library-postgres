@@ -89,7 +89,7 @@ docker_init_database_dir() {
 	fi
 
 	# --pwfile refuses to handle a properly-empty file (hence the "\n"): https://github.com/docker-library/postgres/issues/1025
-	eval 'initdb --username="$POSTGRES_USER" --pwfile=<(printf "%s\n" "$POSTGRES_PASSWORD") '"$POSTGRES_INITDB_ARGS"' "$@"'
+	eval 'initdb --username="$POSTGRES_USER" --pwfile="${POSTGRES_PASSWORD_FILE}" '"$POSTGRES_INITDB_ARGS"' "$@"'
 
 	# unset/cleanup "nss_wrapper" bits
 	if [[ "${LD_PRELOAD:-}" == */libnss_wrapper.so ]]; then
@@ -107,7 +107,7 @@ docker_verify_minimum_env() {
 		12 | 13) # https://github.com/postgres/postgres/commit/67a472d71c98c3d2fa322a1b4013080b20720b98
 			# check password first so we can output the warning before postgres
 			# messes it up
-			if [ "${#POSTGRES_PASSWORD}" -ge 100 ]; then
+			if [ "$(cat ${POSTGRES_PASSWORD_FILE} | wc -c)" -ge 100 ]; then
 				cat >&2 <<-'EOWARN'
 
 					WARNING: The supplied POSTGRES_PASSWORD is 100+ characters.
@@ -116,17 +116,18 @@ docker_verify_minimum_env() {
 
 					  https://www.postgresql.org/message-id/flat/E1Rqxp2-0004Qt-PL%40wrigleys.postgresql.org (BUG #6412)
 					  https://github.com/docker-library/postgres/issues/507
-
 				EOWARN
 			fi
 			;;
 	esac
-	if [ -z "$POSTGRES_PASSWORD" ] && [ 'trust' != "$POSTGRES_HOST_AUTH_METHOD" ]; then
+	if [ -z "$POSTGRES_PASSWORD_FILE" ] \
+	&& [ -z "$(cat $POSTGRES_PASSWORD_FILE 2>/dev/null)" ] \
+	&& [ 'trust' != "$POSTGRES_HOST_AUTH_METHOD" ]; then
 		# The - option suppresses leading tabs but *not* spaces. :)
 		cat >&2 <<-'EOE'
 			Error: Database is uninitialized and superuser password is not specified.
-			       You must specify POSTGRES_PASSWORD to a non-empty value for the
-			       superuser. For example, "-e POSTGRES_PASSWORD=password" on "docker run".
+			       You must specify POSTGRES_PASSWORD_FILE to a non-empty value for the
+			       superuser. For example, "-e POSTGRES_PASSWORD_FILE=/run/secrets/password" on "docker run".
 
 			       You may also use "POSTGRES_HOST_AUTH_METHOD=trust" to allow all
 			       connections without a password. This is *not* recommended.
@@ -141,14 +142,14 @@ docker_verify_minimum_env() {
 			********************************************************************************
 			WARNING: POSTGRES_HOST_AUTH_METHOD has been set to "trust". This will allow
 			         anyone with access to the Postgres port to access your database without
-			         a password, even if POSTGRES_PASSWORD is set. See PostgreSQL
+			         a password, even if POSTGRES_PASSWORD_FILE is set. See PostgreSQL
 			         documentation about "trust":
 			         https://www.postgresql.org/docs/current/auth-trust.html
 			         In Docker's default configuration, this is effectively any other
 			         container on the same system.
 
 			         It is not recommended to use POSTGRES_HOST_AUTH_METHOD=trust. Replace
-			         it with "-e POSTGRES_PASSWORD=password" instead to set a password in
+			         it with "-e POSTGRES_PASSWORD_FILE=/run/secrets/password" instead to set a password in
 			         "docker run".
 			********************************************************************************
 		EOWARN
@@ -221,7 +222,7 @@ docker_setup_db() {
 # Loads various settings that are used elsewhere in the script
 # This should be called before any other functions
 docker_setup_env() {
-	file_env 'POSTGRES_PASSWORD'
+	file_env 'POSTGRES_PASSWORD_FILE'
 
 	file_env 'POSTGRES_USER' 'postgres'
 	file_env 'POSTGRES_DB' "$POSTGRES_USER"
@@ -323,16 +324,15 @@ _main() {
 			docker_init_database_dir
 			pg_setup_hba_conf "$@"
 
-			# PGPASSWORD is required for psql when authentication is required for 'local' connections via pg_hba.conf and is otherwise harmless
+			# PGPASSFILE is required for psql when authentication is required for 'local' connections via pg_hba.conf and is otherwise harmless
 			# e.g. when '--auth=md5' or '--auth-local=md5' is used in POSTGRES_INITDB_ARGS
-			export PGPASSWORD="${PGPASSWORD:-$POSTGRES_PASSWORD}"
+			export PGPASSFILE="${PGPASSFILE:-$POSTGRES_PASSWORD_FILE}"
 			docker_temp_server_start "$@"
-
 			docker_setup_db
 			docker_process_init_files /docker-entrypoint-initdb.d/*
 
 			docker_temp_server_stop
-			unset PGPASSWORD
+			unset PGPASSFILE
 
 			cat <<-'EOM'
 
